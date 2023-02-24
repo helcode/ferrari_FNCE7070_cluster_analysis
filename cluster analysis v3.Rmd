@@ -1,0 +1,364 @@
+---
+title: "Ferrari Cluster Analysis"
+author: "Team-7, (Abhishek Gupta, Alireza Salmanzadeh, Daria Asai, Hani Elmalky)"
+date: "2023-02-17"
+output:
+  html_document:
+    highlight: haddock
+    theme: lumen
+    toc: yes
+    toc_depth: 3
+    toc_float: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+# Code to set the random number seed.
+set.seed(20230422)
+
+# install packages
+#install.packages("factoextra")
+#install.packages("ggforce")
+
+# Load the necessary libraries
+library(cluster)
+library(factoextra)
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(ggpubr)
+library(gridExtra)
+library(ggforce)
+library(concaveman)
+
+```
+
+This document will try to approach Ferrari's historical analysis from a quantitative perspective, it is meant to be a complementary document to the case write app & excel worksheet submitted by Team-7.
+
+# Data Wrangling
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+# Load data
+data.dir <- "/Users/helmalky/Library/CloudStorage/OneDrive-Personal/WEMBA47/Term-6/FNCE 7070 Valuation/Assignements/Ferrari/1 Historical Analysis/"
+fname <- "ratios_dat_20230218_3.csv"
+fullpath <- paste(data.dir, fname, sep ="")
+df_tall <-  read.csv(file = fullpath)
+```
+```{r}
+# transform data into the correct format
+df_tall[, c("Parameter", "Company", "Year", "Ticker", "Group")] <- lapply(df_tall[, c("Parameter", "Company", "Year", "Ticker", "Group")], as.factor)
+
+# drop post analysis column
+df_tall$Is.Leading.Indicator <- NULL
+df_tall$Comparable.Class <- NULL
+
+# show the final data format
+str(df_tall)
+```
+
+
+Wrangle data in preparation for the clustering analysis
+```{r}
+# spread data around year
+df <- spread(df_tall, key = Year, value = Value)
+
+# drop company name, group , and year 2015
+df$Company <- NULL
+df$Group <- NULL
+df$`2015` <- NULL
+
+
+# split the df into a df_list around parameters while dropping the parameter column
+dfl <- split(df, f = df$Parameter)
+dfl <- lapply(dfl, function(x) subset(x, select = -Parameter))
+
+summary(dfl)
+```
+
+```{r}
+str(dfl$AP2Revenues)
+```
+```{r}
+# use ticker name as row column for each df in dfl & drop ticker column
+for (item in 1:length(dfl)) {
+  rownames(dfl[[item]]) <- dfl[[item]]$Ticker
+  dfl[[item]]$Ticker <- NULL
+}
+
+head(dfl$EBITMargin, 7)
+```
+
+```{r fig.height=12, fig.width=8}
+#build the a clusterization function
+build_cluster_map <- function(dataframe, number_of_clusters) {
+  optimum_cluster <- kmeans(dataframe, 
+                            centers = number_of_clusters, 
+                            nstart = 25)
+  cluster_df <- as.data.frame(optimum_cluster$cluster)
+  colnames(cluster_df)[1] <- "Cluster"
+  
+  return (
+    list(
+      cluster_table = cluster_df, 
+      visualization = fviz_cluster(optimum_cluster, data = dataframe)
+    )
+  )
+}
+
+
+analyize_cluster <- function(dataframe, number_of_clusters = 3){
+  k_max <- 10
+  
+  # Average Silhouette Width Analysis
+  p1 <- fviz_nbclust(dataframe, kmeans, k.max = k_max, method = "silhouette") + 
+    theme_minimal() + theme(axis.title.y = element_blank()) +
+    ggtitle("Average Silhouette Width") + 
+    geom_vline(xintercept = number_of_clusters, linetype = 2, col = "red")
+
+  # Total Within Sum of Squares Analysis
+  p2 <- fviz_nbclust(dataframe, kmeans, k.max = k_max, method = "wss") + 
+    theme_minimal() + theme(axis.title.y = element_blank()) +
+    ggtitle("Total Within Sum of Squares") + 
+    geom_vline(xintercept = number_of_clusters, linetype = 2, col = "red")
+  
+  # Gap Statistics (k) Analysis
+  gap_stat <- clusGap(dataframe, FUN = kmeans, nstart = 25, K.max = k_max, B = 50)
+  p3 <- fviz_gap_stat(gap_stat) + 
+    theme_minimal() + theme(axis.title.y = element_blank()) +
+    ggtitle("Gap Statistics (k)") + 
+    geom_vline(xintercept = number_of_clusters, linetype = 2, col = "red")
+
+  
+  # Cluster Analysis
+  cluster_map <- build_cluster_map(dataframe, number_of_clusters)
+  
+  p4 <-  cluster_map$visualization + 
+    theme_minimal() + 
+    ggtitle(paste("Cluster Plot for",number_of_clusters,"Clusters"))
+  
+  p5 <- ggplot() + 
+    theme_minimal() + 
+    annotation_custom(tableGrob(cluster_map$cluster_table))
+
+  
+  ggarrange(
+    ggarrange(p1, p2, p3, widths = c(1,1), ncol = 3), 
+    ggarrange(p4, p5, widths = c(2,1), ncol = 2), 
+    nrow = 2, labels = c("A","B"), heights = c(2,3)
+    )
+  
+}
+
+```
+
+
+# Analyizing Financial Ratios
+
+## Analyizing **All** Ratios' Principle Components
+
+In this section we will utilize principle components to reduce the 12 financial ratios into two dimensions, we understand that this may cause loss of information due the reduction method, but our hypothesis is that performing clustering analysis on the principle components may reveal association between Ferrari & other companies that we can't see by analyzing individual financial ratio.
+
+```{r}
+# spread data around Parameter
+dfw <- pivot_wider(df_tall, names_from = Parameter, values_from = Value)
+
+# drop company name, group , and year 2015
+dfw$Company <- NULL
+dfw$Group <- NULL
+dfw <- subset(dfw, Year != 2015)
+
+dfw$Year <- factor(dfw$Year, levels = c(2013, 2014))
+
+dfw <- as.data.frame(dfw)
+
+# split the df into a df_list around Year while dropping the Year column
+dfwl <- split(dfw, f = dfw$Year)
+dfwl <- lapply(dfwl, function(x) subset(x, select = -Year))
+
+summary(dfwl)
+```
+
+```{r}
+head(dfwl$'2013', 7)
+```
+
+```{r}
+# build row name & scale all values
+for (item in 1:length(dfwl)) {
+  rownames(dfwl[[item]]) <- dfwl[[item]]$Ticker
+  # use ticker name as row column for each df in dfl & drop ticker column
+  dfwl[[item]]$Ticker <- NULL
+  for (column in 1:length(dfwl[[item]])) {
+    dfwl[[item]][[column]] <- scale(dfwl[[item]][[column]])
+  }
+}
+
+head(dfwl$'2013', 7)
+```
+
+### 2013 Cluster Analysis
+```{r fig.height=8, fig.width=12, message=FALSE, warning=FALSE}
+df_to_analyze <- dfwl$'2013'
+
+# identify the optimum cluster size
+analyize_cluster(df_to_analyze, 6)
+```
+
+### 2014 Cluster Analysis
+
+```{r fig.height=8, fig.width=12, message=FALSE, warning=FALSE}
+df_to_analyze <- dfwl$'2014'
+
+# identify the optimum cluster size
+analyize_cluster(df_to_analyze, 7)
+```
+The two graphs above highlights that RACE is creating its unique clusters for both 2013/2014, yet we can notice the adjacency of RACE to the the cluster of `PPRUY, LRCY, LVMUY` and the cluster of `HMC, BMWYY, VLKAF, DDAIF, TM`. we will try to uncover that relationship in the next section by limiting the parameters of the principle components analysis.
+
+## Analyizing **key** Ratios' Principle Components
+
+In this section we will rerun the principle components analysis on ROIC, EBIT Margin, and Capital Turnover parameters only. 
+
+```{r}
+# build a limited data frame
+
+dfwll <- dfwl
+
+
+# build row name & scale all values
+for (item in 1:length(dfwll)) {
+  
+  dfwll[[item]] <- select(dfwll[[item]], 
+                          -c(COGS2Revenue,
+                             SGA2Revenue, 
+                             NPPE2Revenue, 
+                             Cash2Revenues, 
+                             AR2Revenues, 
+                             Inventories2Revenue, 
+                             PrepaidExpenses2Revenues, 
+                             WCR2Revenues, 
+                             AP2Revenues
+                             )
+                          )
+}
+
+
+head(dfwll$'2013', 7)
+```
+
+### 2013 Cluster Analysis
+
+```{r fig.height=8, fig.width=12, message=FALSE, warning=FALSE}
+df_to_analyze <- dfwll$'2013'
+
+# identify the optimum cluster size
+analyize_cluster(df_to_analyze, 6)
+```
+
+### 2014 Cluster Analysis
+
+```{r fig.height=8, fig.width=12, message=FALSE, warning=FALSE}
+df_to_analyze <- dfwll$'2014'
+
+# identify the optimum cluster size
+analyize_cluster(df_to_analyze, 6)
+```
+The analysis above suggests that principle components cauterization over ROIC, EBIT Margin, and Capital Turnover suggests that RACE are in the same cluster of `LVMUY, PPRUY, LRLCY` with proximity to the cluster of `BMWYY, VLKAF, DDAIF, TM, HMC`.
+
+## Analyizing Indvidual Ratio
+### Account Payable to Revenue
+
+```{r fig.height=8, fig.width=12, message=FALSE, warning=FALSE}
+df_to_analyze <- dfl$AP2Revenues
+
+# identify the optimum cluster size
+analyize_cluster(df_to_analyze, 4)
+```
+
+
+### Account Receivable to Revenue
+```{r fig.height=8, fig.width=12, message=FALSE, warning=FALSE}
+df_to_analyze <- dfl$AR2Revenues
+
+# identify the optimum cluster size
+analyize_cluster(df_to_analyze, 3)
+```
+
+
+### Capital Turnover
+```{r fig.height=8, fig.width=12, message=FALSE, warning=FALSE}
+df_to_analyze <- dfl$CapitalTurnover
+
+# identify the optimum cluster size
+analyize_cluster(df_to_analyze, 5)
+```
+
+### Cash to Revenue
+```{r fig.height=8, fig.width=12, message=FALSE, warning=FALSE}
+df_to_analyze <- dfl$Cash2Revenues
+
+# identify the optimum cluster size
+analyize_cluster(df_to_analyze, 4)
+```
+
+### EBITDA Margin
+```{r fig.height=8, fig.width=12, message=FALSE, warning=FALSE}
+df_to_analyze <- dfl$EBITMargin
+
+# identify the optimum cluster size
+analyize_cluster(df_to_analyze, 6)
+```
+
+### Inventory to Revenue
+```{r fig.height=8, fig.width=12, message=FALSE, warning=FALSE}
+df_to_analyze <- dfl$Inventories2Revenue
+
+# identify the optimum cluster size
+analyize_cluster(df_to_analyze, 6)
+```
+
+
+### NPPE to Revenue
+```{r fig.height=8, fig.width=12, message=FALSE, warning=FALSE}
+df_to_analyze <- dfl$NPPE2Revenue
+
+# identify the optimum cluster size
+analyize_cluster(df_to_analyze, 4)
+```
+
+### Prepaid Expenses to Revenue
+```{r fig.height=8, fig.width=12, message=FALSE, warning=FALSE}
+df_to_analyze <- dfl$PrepaidExpenses2Revenues
+
+# identify the optimum cluster size
+analyize_cluster(df_to_analyze, 5)
+```
+
+
+### ROIC
+```{r fig.height=8, fig.width=12, message=FALSE, warning=FALSE}
+df_to_analyze <- dfl$ROIC
+
+# identify the optimum cluster size
+analyize_cluster(df_to_analyze, 5)
+```
+
+
+### SG&A to Revenue
+```{r fig.height=8, fig.width=12, message=FALSE, warning=FALSE}
+df_to_analyze <- dfl$SGA2Revenue
+
+# identify the optimum cluster size
+analyize_cluster(df_to_analyze,6 )
+```
+
+
+### WCR to Revenue
+```{r fig.height=8, fig.width=12, message=FALSE, warning=FALSE}
+df_to_analyze <- dfl$WCR2Revenues
+
+# identify the optimum cluster size
+analyize_cluster(df_to_analyze, 3)
+```
